@@ -30,6 +30,8 @@
 
 -> clear
 -> sort (sort the words/letters inside the file in sorted order)
+-> diff
+ diff file_name1 file_name2
 
 
 # link command (softlink and hardlink)
