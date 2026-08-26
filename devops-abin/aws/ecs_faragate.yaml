@@ -1,0 +1,189 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Simple ECS Fargate template for one container app
+
+Parameters:
+  ClusterName:
+    Type: String
+    Default: sample-ecs-cluster
+
+  ServiceName:
+    Type: String
+    Default: sample-app-service
+
+  ImageUrl:
+    Type: String
+    Default: nginx:latest
+    Description: Container image to run, for example nginx:latest or your ECR image
+
+  ContainerPort:
+    Type: Number
+    Default: 80
+
+  DesiredCount:
+    Type: Number
+    Default: 1
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Existing VPC ID where the ECS tasks will run
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnets for the ECS service
+
+  Cpu:
+    Type: String
+    Default: '256'
+
+  Memory:
+    Type: String
+    Default: '512'
+
+Resources:
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref ClusterName
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${ClusterName}'
+      RetentionInDays: 7
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  # NEW: ALB security group to allow internet traffic to the load balancer
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP traffic to the ALB
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  # NEW: security group for the ECS task itself
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow traffic to the container from the ALB only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+
+  # NEW: Application Load Balancer for public access
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${ServiceName}-alb'
+      Scheme: internet-facing
+      Type: application
+      Subnets: !Ref SubnetIds
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+
+  # NEW: Target group for ECS tasks
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${ServiceName}-tg'
+      TargetType: ip
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: traffic-port
+      Matcher:
+        HttpCode: 200-399
+
+  # NEW: Listener on port 80 forwarding to the target group
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${ServiceName}-task'
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: app
+          Image: !Ref ImageUrl
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  # UPDATED: service now registers container tasks with the ALB target group
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref ECSCluster
+      ServiceName: !Ref ServiceName
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      TaskDefinition: !Ref TaskDefinition
+      LoadBalancers:
+        - TargetGroupArn: !Ref TargetGroup
+          ContainerName: app
+          ContainerPort: !Ref ContainerPort
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref SecurityGroup
+          Subnets: !Ref SubnetIds
+
+Outputs:
+  ClusterName:
+    Description: ECS cluster name
+    Value: !Ref ECSCluster
+
+  ServiceName:
+    Description: ECS service name
+    Value: !Ref Service
+
+  TaskDefinitionArn:
+    Description: ECS task definition ARN
+    Value: !Ref TaskDefinition
+
+  LoadBalancerDnsName:
+    Description: DNS name of the Application Load Balancer
+    Value: !GetAtt LoadBalancer.DNSName
