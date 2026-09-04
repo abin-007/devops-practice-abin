@@ -55,3 +55,10 @@
 -> proc
 -> nproc
 
+# find the file with filename under the / directory , ignores the error , it will be stored in the dev/null directory
+-> find / -name  file_name 2>/dev/null 
+
+-> ls -l (list all the files in long format)
+-> ls -lrt (list all the file in long format, reverse order, with modification date as well)
+-> jar xvf file_name (extract this jar file , x -extract, v - verbose, f - file )
+-> 
